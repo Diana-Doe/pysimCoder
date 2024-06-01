@@ -47,6 +47,15 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 
 #define POINTS_BUFFER_SIZE             20
 
+#define MASK_RED                       0xf800
+#define MASK_GREEN                     0x07e0
+#define MASK_BLUE                      0x001f
+#define COLOR_BACKGROUND               0x0000
+#define COLOR_BORDER                   0xffff
+#define COLOR_LINE                     0x07e0
+
+#define COLOR_ATTENUATION              0.8f
+
 struct Params{
     double x_min;
     double x_max;
@@ -67,12 +76,32 @@ struct Input{
     double strength;
 };
 
+struct Point{
+  uint16_t x; 
+  uint16_t y;
+  float w;
+};
+
+struct draw_ctx{
+  pthread_mutex_t draw_ctx_mutex;
+  struct mzapo_cq points;
+  struct Point last_drawn_point;
+  struct Point *points_to_draw;
+  
+  float *values;
+  uint16_t *color_pallete;
+  int pallete_size;
+
+  uint16_t frame_x;
+  uint16_t frame_y;
+  uint16_t frame_width;
+  uint16_t frame_height;
+};
+
 struct State{
     int lcd_user_id;
-    struct Params pars;
 
-    struct mzapo_cq points;
-    pthread_mutex_t points_mutex;
+    struct draw_ctx *draw_context;
 };
 
 struct Params read_params(python_block *block){
@@ -149,26 +178,87 @@ struct Input read_and_clip_input(python_block *block, struct Params* pars){
   return input;
 }
 
-struct Point{
-  uint16_t x; 
-  uint16_t y;
-  float val;
-};
+uint16_t mix_colors(uint16_t c1, uint16_t c2, float weight){
+  uint16_t c1_r = c1 & MASK_RED;
+  uint16_t c1_g = c1 & MASK_GREEN;
+  uint16_t c1_b = c1 & MASK_BLUE;
+
+  uint16_t c2_r = c2 & MASK_RED;
+  uint16_t c2_g = c2 & MASK_GREEN;
+  uint16_t c2_b = c2 & MASK_BLUE;
+
+  uint16_t c_r = (uint16_t)(((float)(c1_r) * (1.0f-weight)) + ((float)(c2_r) * weight));
+  uint16_t c_g = (uint16_t)(((float)(c1_g) * (1.0f-weight)) + ((float)(c2_g) * weight));
+  uint16_t c_b = (uint16_t)(((float)(c1_b) * (1.0f-weight)) + ((float)(c2_b) * weight));
+
+  return (c_r & MASK_RED) | (c_g & MASK_GREEN) | (c_b & MASK_BLUE);
+}
+
+// function for line drawing
+// taken from https://www.geeksforgeeks.org/bresenhams-line-generation-algorithm/ 
+void bresenham(float* buf, int width, struct Point p1, struct Point p2) 
+{ 
+    int m_new = 2 * ((int)p2.y - (int)p1.y); 
+    int slope_error_new = m_new - ((int)p2.x - (int)p1.x); 
+    for (int x = p1.x, y = p1.y; x <= p2.x; x++) { 
+        buf[y*width + x] = fmaxf(buf[y*width + x], p1.w);
+  
+        // Add slope to increment angle formed 
+        slope_error_new += m_new; 
+  
+        // Slope error reached limit, time to 
+        // increment y and update slope error. 
+        if (slope_error_new >= 0) { 
+            y++; 
+            slope_error_new -= 2 * ((int)p2.x - (int)p1.x); 
+        } 
+    } 
+} 
 
 // function used to draw the oscilloscope curve. Runs in the LCD's thread.
 void draw_function(void* _ctx){
-  struct State* ctx = (struct State*) _ctx;
-  struct Params pars = ctx->pars;
+  struct draw_ctx* ctx = (struct draw_ctx*) _ctx;
 
-  // printf("Pars x: %d, y: %d, w: %d, h: %d\n", pars.lcd_x, pars.lcd_y, pars.lcd_width, pars.lcd_height);
+  // attenuate existing values
+  for(int idx = 0; idx < ctx->frame_width * ctx->frame_height; idx++){
+    ctx->values[idx] *= COLOR_ATTENUATION;
+  }
 
-  // draw frame around region
-  uint16_t frame[LCD_WIDTH];
-  memset(&frame[0], 0xffff, sizeof(uint16_t) * LCD_WIDTH);
-  draw_funct_lcd_set_pixels(&frame[0], pars.lcd_x, pars.lcd_y, pars.lcd_width, 1);
-  draw_funct_lcd_set_pixels(&frame[0], pars.lcd_x, pars.lcd_y + pars.lcd_height-1, pars.lcd_width, 1);
-  draw_funct_lcd_set_pixels(&frame[0], pars.lcd_x, pars.lcd_y, 1, pars.lcd_height);
-  draw_funct_lcd_set_pixels(&frame[0], pars.lcd_x + pars.lcd_width-1, pars.lcd_y, 1, pars.lcd_height );
+  // gather all new points from queue
+  int new_points_nr = 0;
+  struct Point last_drawn_point = ctx->last_drawn_point;
+
+  pthread_mutex_lock(&ctx->draw_ctx_mutex);
+  while(cq_is_empty(&ctx->points) == 0){
+    cq_pop(&ctx->points, &ctx->points_to_draw[new_points_nr++]);
+  }
+  if(new_points_nr > 0){
+    ctx->last_drawn_point = ctx->points_to_draw[new_points_nr-1];
+  }
+  pthread_mutex_unlock(&ctx->draw_ctx_mutex);
+
+  // draw lines between new points
+  for(int id = 0; id < new_points_nr; id++){
+    bresenham(ctx->values, ctx->frame_width, last_drawn_point, ctx->points_to_draw[id]);
+    last_drawn_point = ctx->points_to_draw[id];
+  }
+
+  // draw values to lcd
+  for(int y = 0; y < ctx->frame_height; y++){
+    for(int x = 0; x < ctx->frame_width; x++){
+      int idx = x * y;
+      uint16_t final_color = ctx->color_pallete[(int)round(ctx->values[idx] * (ctx->pallete_size - 1))];
+      draw_funct_lcd_set_pixel(final_color, x, y);
+    }
+  }
+
+  // draw frame around region to lcd
+  uint16_t border_color[LCD_WIDTH];
+  memset(&border_color[0], COLOR_BORDER, sizeof(uint16_t) * LCD_WIDTH);
+  draw_funct_lcd_set_pixels(&border_color[0], ctx->frame_x, ctx->frame_y, ctx->frame_width, 1);
+  draw_funct_lcd_set_pixels(&border_color[0], ctx->frame_x, ctx->frame_y + ctx->frame_height-1, ctx->frame_width, 1);
+  draw_funct_lcd_set_pixels(&border_color[0], ctx->frame_x, ctx->frame_y, 1, ctx->frame_height);
+  draw_funct_lcd_set_pixels(&border_color[0], ctx->frame_x + ctx->frame_width-1, ctx->frame_y, 1, ctx->frame_height);
 }
 
 /*
@@ -182,27 +272,80 @@ static void init(python_block *block)
     /* Save memory map structure to ptrPar */
   block->ptrPar = state;
 
-  // registerblock as user of LCD
-  state->lcd_user_id = lcd_register_user(&draw_function, state);
-
   // Read parameters
-  state->pars = read_params(block);
+  struct Params pars = read_params(block);
 
-  // setup points queue and its access mutex
-  cq_init(&state->points, POINTS_BUFFER_SIZE, sizeof(struct Point));
-  int ret = pthread_mutex_init( &state->points_mutex, NULL);
+  // setup rendering context object
+  struct draw_ctx *dctx = (struct draw_ctx*)malloc(sizeof(struct draw_ctx));
+  state->draw_context = dctx;
+
+  // setup its mutex
+  int ret = pthread_mutex_init( &dctx->draw_ctx_mutex, NULL);
   if(ret != 0){
     printf("Can't initialize mutex for accessing oscilloscope's points buffer. Errcode: %d\n", ret);
-    return(-1);
+    exit(-1);
   }
+
+  // setup its points queue
+  cq_init(&dctx->points, POINTS_BUFFER_SIZE, sizeof(struct Point));
+  
+  // set its init point to center
+  dctx->last_drawn_point.x = pars.lcd_width / 2;
+  dctx->last_drawn_point.y = pars.lcd_height / 2;
+  dctx->last_drawn_point.w = 1.0f;
+
+  // create buffer for storage of currently being drawn points
+  dctx->points_to_draw = (struct Point*)malloc(sizeof(struct Point) * POINTS_BUFFER_SIZE);
+
+  // set its values buffer
+  dctx->values = malloc(sizeof(float) * pars.lcd_width * pars.lcd_height);
+  for(int idx = 0; idx < pars.lcd_width * pars.lcd_height; idx++){
+    dctx->values[idx] = 1.0f;
+  }
+
+  //create collor pallete
+  dctx->pallete_size = 64; // Max bit depth per color is 6 bits for blue -> 64 values
+  dctx->color_pallete = malloc(sizeof(uint16_t) * dctx->pallete_size);
+  for(int id = 0; id < dctx->pallete_size; id++){
+    dctx->color_pallete[id] = mix_colors(COLOR_BACKGROUND, COLOR_LINE, (float)id / (float)(dctx->pallete_size - 1));
+  }
+
+  // copy parts of Params to it too
+  dctx->frame_x = pars.lcd_x;
+  dctx->frame_y = pars.lcd_y;
+  dctx->frame_width = pars.lcd_width;
+  dctx->frame_height = pars.lcd_height;
+  
+  // register block as user of LCD
+  state->lcd_user_id = lcd_register_user(&draw_function, dctx);
 }
 
 /*  INPUT/OUTPUT  FUNCTION  */
 static void inout(python_block *block)
 {
   struct State * state = block->ptrPar;
-  state->pars = read_params(block);   
-  struct Input input = read_and_clip_input(block, &state->pars);
+  struct Params pars = read_params(block);
+  struct Input input = read_and_clip_input(block, &pars);
+
+  // calculate relative positions of point based on input values 
+  double input_x_proportional = (input.x - pars.x_min) / (pars.x_max - pars.x_min);
+  double input_y_proportional = (input.y - pars.y_min) / (pars.y_max - pars.y_min);
+  double input_w_proportional = (input.strength - pars.strength_min) / (pars.x_max - pars.x_min);
+
+  // clamp values to [0, 1]
+  input_x_proportional = fmax(fmin(input_x_proportional, 1.0), 0.0);
+  input_y_proportional = fmax(fmin(input_y_proportional, 1.0), 0.0);
+  input_w_proportional = fmax(fmin(input_w_proportional, 1.0), 0.0);
+
+  // push point to list of points to be drawn
+  struct draw_ctx *dctx = state->draw_context;
+  pthread_mutex_lock(&dctx->draw_ctx_mutex);
+  struct Point p = { 
+    .x=(uint16_t)round(input_x_proportional * pars.lcd_width), 
+    .y=(uint16_t)round(input_y_proportional * pars.lcd_height), 
+    .w=(float)input_w_proportional};
+  cq_push(&dctx->points, &p);
+  pthread_mutex_unlock(&dctx->draw_ctx_mutex);
 }
 
 /*  TERMINATION FUNCTION  */
@@ -211,13 +354,24 @@ static void end(python_block *block)
   struct State *state = (struct State*)block->ptrPar;
 
   // unregister block as user of LCD
-  void* _ctx_to_delete = lcd_unregister_user(state->lcd_user_id); // forget returned context without deleting it, it is the state that is deleted later.
+  struct draw_ctx* dctx = (struct draw_ctx*)lcd_unregister_user(state->lcd_user_id);
 
-  // deinit points queue and its mutex
-  pthread_mutex_destroy(&state->points_mutex);
-  cq_deinit(&state->points);  
+  // delete its color pallete
+  free(dctx->color_pallete);
 
-  // Free allocated memory
+  // delete its values buffer
+  free(dctx->values);
+
+  // delete buffer for currently being drawn points
+  free(dctx->points_to_draw);
+
+  // destroy its point queue
+  cq_deinit(&dctx->points);  
+
+  // deinit its mutex
+  pthread_mutex_destroy(&dctx->draw_ctx_mutex);
+
+  // Delete the state as a whole
   free(state);
   state = NULL;
   block->ptrPar = NULL;

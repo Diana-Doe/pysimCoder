@@ -45,9 +45,10 @@ void cq_push(struct mzapo_cq* queue, void* elem){
 void cq_pop(struct mzapo_cq* queue, void* dst){
     memcpy(dst, queue->data + (queue->index * queue->elem_bytes), queue->elem_bytes);
     queue->index = (queue->index + 1) % queue->max_elements;
+    queue->elements_nr--;
 }
 
-int is_empty(struct mzapo_cq* queue){
+int cq_is_empty(struct mzapo_cq* queue){
     return queue->elements_nr == 0;
 }
 

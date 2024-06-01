@@ -30,7 +30,7 @@ void cq_push(struct mzapo_cq* queue, void* elem);
 
 void cq_pop(struct mzapo_cq* queue, void* dst);
 
-int is_empty(struct mzapo_cq* queue);
+int cq_is_empty(struct mzapo_cq* queue);
 
 void cq_deinit(struct mzapo_cq* queue);
 
