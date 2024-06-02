@@ -33,8 +33,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 #define REALPAR_IDX_X_MAX_VAL          1
 #define REALPAR_IDX_Y_MIN_VAL          2
 #define REALPAR_IDX_Y_MAX_VAL          3
-#define REALPAR_IDX_STRENGTH_MIN_VAL   2
-#define REALPAR_IDX_STRENGTH_MAX_VAL   3
+#define REALPAR_IDX_STRENGTH_MIN_VAL   4
+#define REALPAR_IDX_STRENGTH_MAX_VAL   5
+#define REALPAR_IDX_DECAY_RATE         6
 
 #define INTPAR_IDX_LCD_X               0
 #define INTPAR_IDX_LCD_Y               1
@@ -45,7 +46,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 #define INPUT_IDX_Y_VAL                1
 #define INPUT_IDX_STRENGTH_VAL         2
 
-#define POINTS_BUFFER_SIZE             20
+#define POINTS_BUFFER_SIZE             30
 
 #define MASK_RED                       0xf800
 #define MASK_GREEN                     0x07e0
@@ -54,8 +55,6 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
 #define COLOR_BORDER                   0xffff
 #define COLOR_LINE                     0x07e0
 
-#define COLOR_ATTENUATION              0.8f
-
 struct Params{
     double x_min;
     double x_max;
@@ -63,6 +62,7 @@ struct Params{
     double y_max;
     double strength_min;
     double strength_max;
+    double decay_rate;
 
     int lcd_x;
     int lcd_y;
@@ -77,8 +77,8 @@ struct Input{
 };
 
 struct Point{
-  uint16_t x; 
-  uint16_t y;
+  int16_t x; 
+  int16_t y;
   float w;
 };
 
@@ -91,6 +91,8 @@ struct draw_ctx{
   float *values;
   uint16_t *color_pallete;
   int pallete_size;
+
+  float decay_rate;
 
   uint16_t frame_x;
   uint16_t frame_y;
@@ -114,6 +116,7 @@ struct Params read_params(python_block *block){
   pars.y_max = realPar[REALPAR_IDX_Y_MAX_VAL];
   pars.strength_min = realPar[REALPAR_IDX_STRENGTH_MIN_VAL];
   pars.strength_max = realPar[REALPAR_IDX_STRENGTH_MAX_VAL];
+  pars.decay_rate = realPar[REALPAR_IDX_DECAY_RATE];
 
   int * intPar = block->intPar;
   pars.lcd_x = intPar[INTPAR_IDX_LCD_X];
@@ -166,10 +169,9 @@ struct Params read_params(python_block *block){
 struct Input read_and_clip_input(python_block *block, struct Params* pars){
   struct Input input;
 
-  double *u = block->u[0];
-  input.x = u[INPUT_IDX_X_VAL];
-  input.y = u[INPUT_IDX_Y_VAL];
-  input.strength = u[INPUT_IDX_STRENGTH_VAL];
+  input.x = *(double*)block->u[INPUT_IDX_X_VAL];
+  input.y = *(double*)block->u[INPUT_IDX_Y_VAL];
+  input.strength = *(double*)block->u[INPUT_IDX_STRENGTH_VAL];
 
   input.x = fmin(fmax(input.x, pars->x_min), pars->x_max);
   input.y = fmin(fmax(input.y, pars->y_min), pars->y_max);
@@ -187,41 +189,40 @@ uint16_t mix_colors(uint16_t c1, uint16_t c2, float weight){
   uint16_t c2_g = c2 & MASK_GREEN;
   uint16_t c2_b = c2 & MASK_BLUE;
 
-  uint16_t c_r = (uint16_t)(((float)(c1_r) * (1.0f-weight)) + ((float)(c2_r) * weight));
-  uint16_t c_g = (uint16_t)(((float)(c1_g) * (1.0f-weight)) + ((float)(c2_g) * weight));
-  uint16_t c_b = (uint16_t)(((float)(c1_b) * (1.0f-weight)) + ((float)(c2_b) * weight));
+  uint16_t c_r = (uint16_t)round(((float)(c1_r) * (1.0f-weight)) + ((float)(c2_r) * weight));
+  uint16_t c_g = (uint16_t)round(((float)(c1_g) * (1.0f-weight)) + ((float)(c2_g) * weight));
+  uint16_t c_b = (uint16_t)round(((float)(c1_b) * (1.0f-weight)) + ((float)(c2_b) * weight));
 
   return (c_r & MASK_RED) | (c_g & MASK_GREEN) | (c_b & MASK_BLUE);
 }
 
 // function for line drawing
-// taken from https://www.geeksforgeeks.org/bresenhams-line-generation-algorithm/ 
-void bresenham(float* buf, int width, struct Point p1, struct Point p2) 
-{ 
-    int m_new = 2 * ((int)p2.y - (int)p1.y); 
-    int slope_error_new = m_new - ((int)p2.x - (int)p1.x); 
-    for (int x = p1.x, y = p1.y; x <= p2.x; x++) { 
-        buf[y*width + x] = fmaxf(buf[y*width + x], p1.w);
-  
-        // Add slope to increment angle formed 
-        slope_error_new += m_new; 
-  
-        // Slope error reached limit, time to 
-        // increment y and update slope error. 
-        if (slope_error_new >= 0) { 
-            y++; 
-            slope_error_new -= 2 * ((int)p2.x - (int)p1.x); 
-        } 
-    } 
-} 
+// Taken from https://zingl.github.io/bresenham.html
+void bresenham(struct draw_ctx* ctx, int x0, int y0, int x1, int y1, float strength)
+{
+   int dx =  abs(x1-x0), sx = x0<x1 ? 1 : -1;
+   int dy = -abs(y1-y0), sy = y0<y1 ? 1 : -1; 
+   int err = dx+dy, e2; /* error value e_xy */
+ 
+   for(;;){  /* loop */
+      // setPixel(x0,y0);
+      if(x0 >= 0 && x0 < ctx->frame_width && y0 >= 0 && y0 < ctx->frame_height){
+        ctx->values[y0 * ctx->frame_width + x0] = fmaxf(ctx->values[y0 * ctx->frame_width + x0], strength);
+      }
+      if (x0==x1 && y0==y1) break;
+      e2 = 2*err;
+      if (e2 >= dy) { err += dy; x0 += sx; } /* e_xy+e_x > 0 */
+      if (e2 <= dx) { err += dx; y0 += sy; } /* e_xy+e_y < 0 */
+   }
+}
 
 // function used to draw the oscilloscope curve. Runs in the LCD's thread.
 void draw_function(void* _ctx){
   struct draw_ctx* ctx = (struct draw_ctx*) _ctx;
 
-  // attenuate existing values
+  // decay existing values
   for(int idx = 0; idx < ctx->frame_width * ctx->frame_height; idx++){
-    ctx->values[idx] *= COLOR_ATTENUATION;
+    ctx->values[idx] *= ctx->decay_rate;
   }
 
   // gather all new points from queue
@@ -239,16 +240,16 @@ void draw_function(void* _ctx){
 
   // draw lines between new points
   for(int id = 0; id < new_points_nr; id++){
-    bresenham(ctx->values, ctx->frame_width, last_drawn_point, ctx->points_to_draw[id]);
+    bresenham(ctx, last_drawn_point.x, last_drawn_point.y, ctx->points_to_draw[id].x, ctx->points_to_draw[id].y, last_drawn_point.w);
     last_drawn_point = ctx->points_to_draw[id];
   }
 
   // draw values to lcd
   for(int y = 0; y < ctx->frame_height; y++){
     for(int x = 0; x < ctx->frame_width; x++){
-      int idx = x * y;
+      int idx = y * ctx->frame_width + x;
       uint16_t final_color = ctx->color_pallete[(int)round(ctx->values[idx] * (ctx->pallete_size - 1))];
-      draw_funct_lcd_set_pixel(final_color, x, y);
+      draw_funct_lcd_set_pixel(final_color, x + ctx->frame_x, y + ctx->frame_y);
     }
   }
 
@@ -300,7 +301,7 @@ static void init(python_block *block)
   // set its values buffer
   dctx->values = malloc(sizeof(float) * pars.lcd_width * pars.lcd_height);
   for(int idx = 0; idx < pars.lcd_width * pars.lcd_height; idx++){
-    dctx->values[idx] = 1.0f;
+    dctx->values[idx] = 0.0f;
   }
 
   //create collor pallete
@@ -309,6 +310,8 @@ static void init(python_block *block)
   for(int id = 0; id < dctx->pallete_size; id++){
     dctx->color_pallete[id] = mix_colors(COLOR_BACKGROUND, COLOR_LINE, (float)id / (float)(dctx->pallete_size - 1));
   }
+
+  dctx->decay_rate = 0.8f;
 
   // copy parts of Params to it too
   dctx->frame_x = pars.lcd_x;
@@ -330,21 +333,20 @@ static void inout(python_block *block)
   // calculate relative positions of point based on input values 
   double input_x_proportional = (input.x - pars.x_min) / (pars.x_max - pars.x_min);
   double input_y_proportional = (input.y - pars.y_min) / (pars.y_max - pars.y_min);
-  double input_w_proportional = (input.strength - pars.strength_min) / (pars.x_max - pars.x_min);
+  double input_w_proportional = (input.strength - pars.strength_min) / (pars.strength_max - pars.strength_min);
 
-  // clamp values to [0, 1]
-  input_x_proportional = fmax(fmin(input_x_proportional, 1.0), 0.0);
-  input_y_proportional = fmax(fmin(input_y_proportional, 1.0), 0.0);
+  // clamp strength to [0, 1]
   input_w_proportional = fmax(fmin(input_w_proportional, 1.0), 0.0);
 
   // push point to list of points to be drawn
   struct draw_ctx *dctx = state->draw_context;
   pthread_mutex_lock(&dctx->draw_ctx_mutex);
   struct Point p = { 
-    .x=(uint16_t)round(input_x_proportional * pars.lcd_width), 
-    .y=(uint16_t)round(input_y_proportional * pars.lcd_height), 
+    .x=(int16_t)round(input_x_proportional * pars.lcd_width), 
+    .y=(int16_t)round(input_y_proportional * pars.lcd_height), 
     .w=(float)input_w_proportional};
   cq_push(&dctx->points, &p);
+  dctx->decay_rate = pars.decay_rate;
   pthread_mutex_unlock(&dctx->draw_ctx_mutex);
 }
 
