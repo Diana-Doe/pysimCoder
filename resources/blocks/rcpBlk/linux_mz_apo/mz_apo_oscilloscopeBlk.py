@@ -21,6 +21,7 @@ def mz_apo_oscilloscopeBlk(pin, x, y, width, height, x_min_val, x_max_val, y_min
        y_max_val: Upper bound of allowed range of 'y' input. Values more than that will be clipped to this value.
        strength_min_val: Lower bound of allowed range of 'strength' input. Values less than that will be clipped to this value.
        strength_max_val: Upper bound of allowed range of 'strength' input. Values more than that will be clipped to this value.
+       decay_rate: Rate at which old values on screen disappear.
 
     Returns
     -------
