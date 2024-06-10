@@ -12,7 +12,7 @@
 
  *******************************************************************/
 
-#define _POSIX_C_SOURCE 200112 L
+#define _POSIX_C_SOURCE 200112L
 
 //#define HX8357_B
 #define ILI9481

@@ -194,9 +194,9 @@ uint16_t mix_colors(uint16_t c1, uint16_t c2, float weight) {
   uint16_t c2_g = c2 & MASK_GREEN;
   uint16_t c2_b = c2 & MASK_BLUE;
 
-  uint16_t c_r = (uint16_t) round(((float)(c1_r) * (1.0 f - weight)) + ((float)(c2_r) * weight));
-  uint16_t c_g = (uint16_t) round(((float)(c1_g) * (1.0 f - weight)) + ((float)(c2_g) * weight));
-  uint16_t c_b = (uint16_t) round(((float)(c1_b) * (1.0 f - weight)) + ((float)(c2_b) * weight));
+  uint16_t c_r = (uint16_t) roundf(((float)(c1_r) * (1.0f - weight)) + ((float)(c2_r) * weight));
+  uint16_t c_g = (uint16_t) roundf(((float)(c1_g) * (1.0f - weight)) + ((float)(c2_g) * weight));
+  uint16_t c_b = (uint16_t) roundf(((float)(c1_b) * (1.0f - weight)) + ((float)(c2_b) * weight));
 
   return (c_r & MASK_RED) | (c_g & MASK_GREEN) | (c_b & MASK_BLUE);
 }
@@ -303,7 +303,7 @@ static void init(python_block * block) {
   // set its init point to center
   dctx -> last_drawn_point.x = pars.lcd_width / 2;
   dctx -> last_drawn_point.y = pars.lcd_height / 2;
-  dctx -> last_drawn_point.w = 1.0 f;
+  dctx -> last_drawn_point.w = 1.0f;
 
   // create buffer for storage of currently being drawn points
   dctx -> points_to_draw = (struct Point * ) malloc(sizeof(struct Point) * POINTS_BUFFER_SIZE);
@@ -311,7 +311,7 @@ static void init(python_block * block) {
   // set its values buffer
   dctx -> values = malloc(sizeof(float) * pars.lcd_width * pars.lcd_height);
   for (int idx = 0; idx < pars.lcd_width * pars.lcd_height; idx++) {
-    dctx -> values[idx] = 0.0 f;
+    dctx -> values[idx] = 0.0f;
   }
 
   //create collor pallete
@@ -321,7 +321,7 @@ static void init(python_block * block) {
     dctx -> color_pallete[id] = mix_colors(COLOR_BACKGROUND, COLOR_LINE, (float) id / (float)(dctx -> pallete_size - 1));
   }
 
-  dctx -> decay_rate = 0.8 f;
+  dctx -> decay_rate = 0.8f;
 
   // copy parts of Params to it too
   dctx -> frame_x = pars.lcd_x;
